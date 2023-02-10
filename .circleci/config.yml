@@ -223,7 +223,6 @@ ac_test: &ac_test
 
 workflows:
   system:
-    when:
     jobs:
       - wasm-linux-clang:
           filters: *tag_filter
