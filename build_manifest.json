@@ -2,7 +2,7 @@
   "aztec-connect-cpp-wasm-linux-clang": {
     "buildDir": ".",
     "dockerfile": "dockerfiles/Dockerfile.wasm-linux-clang",
-    "rebuildPatterns": ["^aztec-connect-cpp/"],
+    "rebuildPatterns": ["^./"],
     "dependencies": []
   },
   "aztec-connect-cpp-x86_64-linux-clang": {
@@ -18,7 +18,7 @@
     "dependencies": []
   },
   "aztec-connect-cpp-x86_64-linux-gcc": {
-    "buildDir": "aztec-connect-cpp",
+    "buildDir": "./",
     "dockerfile": "dockerfiles/Dockerfile.x86_64-linux-gcc",
     "rebuildPatterns": ["^./"],
     "dependencies": []
