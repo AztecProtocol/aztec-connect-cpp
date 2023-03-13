@@ -9,6 +9,7 @@
 #include <common/map.hpp>
 #include <common/container.hpp>
 #include "../notes/constants.hpp"
+#include <chrono>
 
 // #pragma GCC diagnostic ignored "-Wunused-variable"
 // #pragma GCC diagnostic ignored "-Wunused-parameter"
@@ -248,11 +249,41 @@ void accumulate_tx_fees(Composer& composer,
                                    format("proof asset id matched ", uint64_t(num_matched.get_value()), " times"));
 }
 
+std::chrono::steady_clock::time_point start_timer()
+{
+    return std::chrono::steady_clock::now();
+}
+
+std::string append_space(std::string msg, const size_t limit)
+{
+    ASSERT(msg.length() < limit);
+    auto message = msg;
+    for (size_t i = msg.length(); i <= limit; i++) {
+        message += " ";
+    }
+    return message;
+}
+
+void stop_timer(Composer& composer,
+                std::chrono::steady_clock::time_point& time_begin,
+                size_t gate_begin,
+                std::string msg)
+{
+    auto message = append_space(msg, 50);
+    auto end = std::chrono::steady_clock::now();
+    auto difference = std::chrono::duration_cast<std::chrono::milliseconds>(end - time_begin).count();
+    auto time_print = append_space(format(difference), 8);
+    auto gate_print = append_space(format(composer.get_num_gates() - gate_begin), 10);
+    info("| ", message, " | ", time_print, " | ", gate_print, " |");
+}
+
 recursion_output<bn254> rollup_circuit(Composer& composer,
                                        rollup_tx const& rollup,
                                        std::vector<std::shared_ptr<waffle::verification_key>> const& verification_keys,
                                        size_t max_num_txs)
 {
+    auto time_start = start_timer();
+    auto gate_start = composer.get_num_gates();
     // Compute a constant witness of the next power of 2 > max_num_txs.
     const auto floor_rollup_size = 1UL << numeric::get_msb(max_num_txs);
     const auto rollup_size_pow2_ = floor_rollup_size << (max_num_txs != floor_rollup_size);
@@ -291,7 +322,13 @@ recursion_output<bn254> rollup_circuit(Composer& composer,
         return suint_ct(witness_ct(&composer, bid), DEFI_BRIDGE_CALL_DATA_BIT_LENGTH, "bridge_call_data");
     });
     const auto recursive_manifest = Composer::create_unrolled_manifest(verification_keys[0]->num_public_inputs);
+    info("+-----------------------------------------------------+-----------+-------------+");
+    info("| item                                                | time      | # gates     |");
+    info("+-----------------------------------------------------+-----------+-------------+");
+    stop_timer(composer, time_start, gate_start, "witness_creation");
 
+    time_start = start_timer();
+    gate_start = composer.get_num_gates();
     const auto num_asset_ids = field_ct(witness_ct(&composer, rollup.num_asset_ids));
     auto asset_ids = map(rollup.asset_ids, [&](auto& aid) { return field_ct(witness_ct(&composer, aid)); });
     // Zero any input bridge_call_datas that are outside scope, and check in scope bridge_call_datas are not zero.
@@ -301,7 +338,10 @@ recursion_output<bn254> rollup_circuit(Composer& composer,
         auto valid = !in_scope || bridge_call_datas[i] != 0;
         valid.assert_equal(true, "bridge_call_data out of scope");
     }
+    stop_timer(composer, time_start, gate_start, "bridge_call_data validation");
 
+    time_start = start_timer();
+    gate_start = composer.get_num_gates();
     // Input asset_ids that are outside scope are set to 2^{30} (NUM_MAX_ASSETS).
     for (uint32_t i = 0; i < NUM_ASSETS; i++) {
         auto in_scope = uint32_ct(i) < num_asset_ids;
@@ -309,6 +349,7 @@ recursion_output<bn254> rollup_circuit(Composer& composer,
         auto valid = !in_scope || asset_ids[i] != field_ct(MAX_NUM_ASSETS);
         valid.assert_equal(true, "asset_id out of scope");
     }
+    stop_timer(composer, time_start, gate_start, "asset_id validation");
 
     // Loop accumulators.
     auto new_data_values = std::vector<field_ct>();
@@ -326,18 +367,27 @@ recursion_output<bn254> rollup_circuit(Composer& composer,
 
     for (size_t i = 0; i < max_num_txs; ++i) {
         // Pick verification key and check it's permitted.
+        info("+-----------------------------------------------------+-----------+-------------+");
+        info("inner proof: ", i);
+        info("+-----------------------------------------------------+-----------+-------------+");
+        time_start = start_timer();
+        gate_start = composer.get_num_gates();
         auto proof_id_u32 = from_buffer<uint32_t>(rollup.txs[i], InnerProofOffsets::PROOF_ID + 28);
         auto recursive_verification_key =
             plonk::stdlib::recursion::verification_key<bn254>::from_witness(&composer, verification_keys[proof_id_u32]);
         recursive_verification_key->validate_key_is_in_set(verification_keys);
+        stop_timer(composer, time_start, gate_start, "vkey validation");
 
         // Verify the inner proof.
+        time_start = start_timer();
+        gate_start = composer.get_num_gates();
         recursion_output =
             verify_proof<bn254, recursive_turbo_verifier_settings<bn254>>(&composer,
                                                                           recursive_verification_key,
                                                                           recursive_manifest,
                                                                           waffle::plonk_proof{ rollup.txs[i] },
                                                                           recursion_output);
+        stop_timer(composer, time_start, gate_start, "recursive proof verification");
 
         auto is_real = num_txs > uint32_ct(&composer, i);
         auto& public_inputs = recursion_output.public_inputs;
@@ -347,15 +397,23 @@ recursion_output<bn254> rollup_circuit(Composer& composer,
             public_inputs[j] *= is_real;
         }
 
+        time_start = start_timer();
+        gate_start = composer.get_num_gates();
         auto tx_fee = process_defi_deposit(
             composer, rollup_id, public_inputs, bridge_call_datas, defi_deposit_sums, num_defi_interactions);
+        stop_timer(composer, time_start, gate_start, "process defi deposits");
 
+        time_start = start_timer();
+        gate_start = composer.get_num_gates();
         process_claims(public_inputs, new_defi_root);
+        stop_timer(composer, time_start, gate_start, "process claims");
 
         // Ordering matters. This `push_back` must happen after any mutations to `public_inputs` in the
         // `process_defi_deposit()` & `process_claims()` functions, but before `process_chained_txs`.
         propagated_tx_public_inputs.push_back(slice(public_inputs, 0, PropagatedInnerProofFields::NUM_FIELDS));
 
+        time_start = start_timer();
+        gate_start = composer.get_num_gates();
         process_chained_txs(i,
                             is_real,
                             public_inputs,
@@ -363,6 +421,7 @@ recursion_output<bn254> rollup_circuit(Composer& composer,
                             old_data_root,
                             linked_commitment_paths,
                             linked_commitment_indices);
+        stop_timer(composer, time_start, gate_start, "process chained txs");
 
         // Add this proof's data values to the list.
         new_data_values.push_back(public_inputs[InnerProofFields::NOTE_COMMITMENT1]);
@@ -373,6 +432,8 @@ recursion_output<bn254> rollup_circuit(Composer& composer,
         new_null_indicies.push_back(public_inputs[InnerProofFields::NULLIFIER2]);
 
         // Check this proof's data root exists in the data root tree (unless a padding entry).
+        time_start = start_timer();
+        gate_start = composer.get_num_gates();
         auto data_root = public_inputs[InnerProofFields::MERKLE_ROOT];
         bool_ct data_root_exists =
             data_root != 0 && check_membership(data_roots_root,
@@ -380,25 +441,38 @@ recursion_output<bn254> rollup_circuit(Composer& composer,
                                                data_root,
                                                data_root_indicies[i].decompose_into_bits(ROOT_TREE_DEPTH));
         is_real.assert_equal(data_root_exists, format("data_root_for_proof_", i));
+        stop_timer(composer, time_start, gate_start, "merkle data root check");
 
         // Accumulate tx fee.
+        time_start = start_timer();
+        gate_start = composer.get_num_gates();
         auto proof_id = public_inputs[InnerProofFields::PROOF_ID];
         auto asset_id = public_inputs[InnerProofFields::TX_FEE_ASSET_ID];
         accumulate_tx_fees(composer, total_tx_fees, proof_id, asset_id, tx_fee, asset_ids, num_asset_ids, is_real);
+        stop_timer(composer, time_start, gate_start, "accumulate tx fees");
 
         prev_txs_public_inputs.push_back(public_inputs);
     }
 
+    time_start = start_timer();
+    gate_start = composer.get_num_gates();
     new_data_values.resize(rollup_size_pow2_ * 2, fr(0));
     batch_update_membership(new_data_root, old_data_root, old_data_path, new_data_values, data_start_index.value);
+    stop_timer(composer, time_start, gate_start, "new notes added");
 
+    time_start = start_timer();
+    gate_start = composer.get_num_gates();
     auto new_null_root =
         check_nullifiers_inserted(composer, new_null_roots, old_null_paths, num_txs, old_null_root, new_null_indicies);
+    stop_timer(composer, time_start, gate_start, "new nullifiers added");
 
+    time_start = start_timer();
+    gate_start = composer.get_num_gates();
     // Compute hash of the tx public inputs. Used to reduce number of public inputs published in root rollup.
     auto sha_input = flatten(propagated_tx_public_inputs);
     sha_input.resize(rollup_size_pow2_ * PropagatedInnerProofFields::NUM_FIELDS, field_ct(0));
     auto hash_output = stdlib::sha256_to_field(packed_byte_array_ct::from_field_element_vector(sha_input));
+    stop_timer(composer, time_start, gate_start, "public input hash");
 
     // Publish public inputs.
     rollup_id.set_public();

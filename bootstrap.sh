@@ -27,7 +27,7 @@ else
 fi
 
 # Download ignition transcripts.
-(cd ./barretenberg/cpp/srs_db && ./download_ignition.sh 3)
+(cd ./barretenberg/cpp/srs_db && ./download_ignition.sh 10)
 
 # Pick native toolchain file.
 if [ "$OS" == "macos" ]; then

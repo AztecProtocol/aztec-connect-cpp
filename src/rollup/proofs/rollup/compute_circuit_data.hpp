@@ -47,7 +47,11 @@ inline circuit_data get_circuit_data(size_t rollup_size,
 
     auto build_circuit = [&](Composer& composer) {
         auto rollup = create_padding_rollup(rollup_size, join_split_circuit_data.padding_proof);
+        std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
         rollup_circuit(composer, rollup, verification_keys, rollup_size);
+        std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+        std::cout << "Time difference = " << std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count()
+                  << "[ms]" << std::endl;
     };
 
     auto cd =

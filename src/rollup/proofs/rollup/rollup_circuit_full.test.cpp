@@ -254,6 +254,24 @@ HEAVY_TEST_F(rollup_full_tests, test_3_rollup_pads_to_4)
     }
 }
 
+HEAVY_TEST_F(rollup_full_tests, test_real_rollup)
+{
+    size_t rollup_size = 28;
+
+    context.append_account_notes();
+    context.append_value_notes({ 100, 50 });
+    context.start_next_root_rollup();
+
+    auto join_split_proof = context.create_join_split_proof({ 2, 3 }, { 100, 50 }, { 70, 80 - tx_fee });
+    auto rollup = create_rollup_tx(context.world_state, rollup_size, { join_split_proof });
+
+    auto rollup_circuit_data =
+        rollup::get_circuit_data(rollup_size, js_cd, account_cd, claim_cd, srs, "", true, false, false);
+    auto result = verify(rollup, rollup_circuit_data);
+
+    ASSERT_TRUE(result.verified);
+}
+
 } // namespace rollup
 } // namespace proofs
 } // namespace rollup
